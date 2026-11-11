@@ -9269,4 +9269,57 @@ export function libsqlConcatSubstringTest(test: Test) {
 			// bigFor: 'ohnathan',
 		}]);
 	});
+
+	test.concurrent('select with `indexed by` and `not indexed` hints', async ({ db, push }) => {
+		const authors = sqliteTable('authors_index_hints', {
+			id: integer('id').primaryKey(),
+			name: text('name').notNull(),
+		});
+		const posts = sqliteTable('posts_index_hints', {
+			id: integer('id').primaryKey(),
+			authorId: integer('author_id').notNull(),
+			title: text('title').notNull(),
+		}, () => [postsAuthorIdx]);
+		const postsAuthorIdx = index('posts_index_hints_author_idx').on(posts.authorId);
+
+		await push({ authors, posts });
+
+		await db.insert(authors).values([{ id: 1, name: 'John' }, { id: 2, name: 'Jane' }]);
+		await db.insert(posts).values([
+			{ id: 1, authorId: 1, title: 'first' },
+			{ id: 2, authorId: 2, title: 'second' },
+			{ id: 3, authorId: 1, title: 'third' },
+		]);
+
+		const indexedBy = await db.select({ id: posts.id }).from(posts, { indexedBy: postsAuthorIdx })
+			.where(eq(posts.authorId, 1)).orderBy(posts.id);
+		expect(indexedBy).toStrictEqual([{ id: 1 }, { id: 3 }]);
+
+		const indexedByName = await db.select({ id: posts.id }).from(posts, { indexedBy: 'posts_index_hints_author_idx' })
+			.where(eq(posts.authorId, 2));
+		expect(indexedByName).toStrictEqual([{ id: 2 }]);
+
+		const notIndexed = await db.select({ id: posts.id }).from(posts, { notIndexed: true })
+			.where(eq(posts.authorId, 1)).orderBy(posts.id);
+		expect(notIndexed).toStrictEqual([{ id: 1 }, { id: 3 }]);
+
+		const joined = await db.select({ author: authors.name, title: posts.title }).from(authors)
+			.innerJoin(posts, eq(posts.authorId, authors.id), { indexedBy: postsAuthorIdx })
+			.where(eq(authors.id, 1)).orderBy(posts.id);
+		expect(joined).toStrictEqual([{ author: 'John', title: 'first' }, { author: 'John', title: 'third' }]);
+
+		const joinedNotIndexed = await db.select({ author: authors.name, title: posts.title }).from(authors)
+			.leftJoin(posts, eq(posts.authorId, authors.id), { notIndexed: true })
+			.where(eq(authors.id, 2));
+		expect(joinedNotIndexed).toStrictEqual([{ author: 'Jane', title: 'second' }]);
+
+		const aliased = alias(posts, 'p');
+		const fromAlias = await db.select({ id: aliased.id }).from(aliased, { indexedBy: postsAuthorIdx })
+			.where(eq(aliased.authorId, 2));
+		expect(fromAlias).toStrictEqual([{ id: 2 }]);
+
+		await expect(
+			db.select({ id: posts.id }).from(posts, { indexedBy: 'posts_index_hints_missing_idx' }),
+		).rejects.toThrowError();
+	});
 }

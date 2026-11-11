@@ -26,13 +26,15 @@ import type { Subquery } from '~/subquery.ts';
 import type { Table, UpdateTableConfig } from '~/table.ts';
 import type { SQLiteViewBase } from '../view-base.ts';
 import type { SQLiteViewWithSelection } from '../view.ts';
-import type { SQLiteSelectBase } from './select.ts';
+import type { SQLiteIndexHintConfig, SQLiteSelectBase } from './select.ts';
 
 export interface SQLiteSelectJoinConfig {
 	on: SQL | undefined;
 	table: SQLiteTable | Subquery | SQLiteViewBase | SQL;
 	alias: string | undefined;
 	joinType: JoinType;
+	indexedBy?: string;
+	notIndexed?: boolean;
 }
 
 export type BuildAliasTable<TTable extends SQLiteTable | View, TAlias extends string> = TTable extends Table
@@ -60,6 +62,8 @@ export interface SQLiteSelectConfig {
 	where?: SQL;
 	having?: SQL;
 	table: SQLiteTable | Subquery | SQLiteViewBase | SQL;
+	indexedBy?: string;
+	notIndexed?: boolean;
 	limit?: number | Placeholder;
 	offset?: number | Placeholder;
 	joins?: SQLiteSelectJoinConfig[];
@@ -117,6 +121,8 @@ export type SQLiteSelectJoinFn<
 >(
 	table: TJoinedTable,
 	on: ((aliases: T['_']['selection']) => SQL | undefined) | SQL | undefined,
+	indexHint?: TJoinedTable extends SQLiteTable ? SQLiteIndexHintConfig
+		: 'Index hint configuration is allowed only for SQLiteTable and not for subqueries or views',
 ) => SQLiteSelectJoin<T, TDynamic, TJoinType, TJoinedTable, TJoinedName>;
 
 export type SQLiteSelectCrossJoinFn<
@@ -125,7 +131,11 @@ export type SQLiteSelectCrossJoinFn<
 > = <
 	TJoinedTable extends SQLiteTable | Subquery | SQLiteViewBase | SQL,
 	TJoinedName extends GetSelectTableName<TJoinedTable> = GetSelectTableName<TJoinedTable>,
->(table: TJoinedTable) => SQLiteSelectJoin<T, TDynamic, 'cross', TJoinedTable, TJoinedName>;
+>(
+	table: TJoinedTable,
+	indexHint?: TJoinedTable extends SQLiteTable ? SQLiteIndexHintConfig
+		: 'Index hint configuration is allowed only for SQLiteTable and not for subqueries or views',
+) => SQLiteSelectJoin<T, TDynamic, 'cross', TJoinedTable, TJoinedName>;
 
 export type SelectedFieldsFlat = SelectFieldsFlatBase<SQLiteColumn>;
 

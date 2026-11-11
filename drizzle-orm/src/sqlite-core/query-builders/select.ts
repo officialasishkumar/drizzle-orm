@@ -16,9 +16,10 @@ import { SQL } from '~/sql/sql.ts';
 import type { ColumnsSelection, Placeholder, Query } from '~/sql/sql.ts';
 import type { SQLiteColumn } from '~/sqlite-core/columns/index.ts';
 import type { SQLiteDialect } from '~/sqlite-core/dialect.ts';
+import type { IndexBuilder } from '~/sqlite-core/indexes.ts';
 import type { SQLiteSession } from '~/sqlite-core/session.ts';
 import type { SubqueryWithSelection } from '~/sqlite-core/subquery.ts';
-import type { SQLiteTable } from '~/sqlite-core/table.ts';
+import { SQLiteTable } from '~/sqlite-core/table.ts';
 import { Subquery } from '~/subquery.ts';
 import { Table } from '~/table.ts';
 import { usedTablesOf } from '~/used-tables.ts';
@@ -45,6 +46,37 @@ import type {
 	SQLiteSetOperatorWithResult,
 } from './select.types.ts';
 
+export type SQLiteIndexForHint = IndexBuilder | string;
+
+/**
+ * Index hint of a table in the `from` or a `join` clause:
+ * - `indexedBy` forces SQLite to use the given index (`indexed by "index_name"`);
+ *   the query fails if the index doesn't exist or can't be used
+ * - `notIndexed` forbids SQLite from using any index to look up the table (`not indexed`)
+ *
+ * See: {@link https://www.sqlite.org/lang_indexedby.html}
+ */
+export type SQLiteIndexHintConfig =
+	| { indexedBy: SQLiteIndexForHint; notIndexed?: undefined }
+	| { notIndexed: boolean; indexedBy?: undefined };
+
+function resolveIndexHint(
+	table: SQLiteSelectConfig['table'],
+	indexHint: SQLiteIndexHintConfig | string | undefined,
+): Pick<SQLiteSelectConfig, 'indexedBy' | 'notIndexed'> {
+	if (!is(table, SQLiteTable) || !indexHint || typeof indexHint === 'string') return {};
+
+	const { indexedBy, notIndexed } = indexHint;
+	if (indexedBy !== undefined && notIndexed) {
+		throw new Error('`indexedBy` and `notIndexed` index hints cannot be used together');
+	}
+
+	return {
+		indexedBy: indexedBy === undefined ? undefined : typeof indexedBy === 'string' ? indexedBy : indexedBy.config.name,
+		notIndexed: notIndexed || undefined,
+	};
+}
+
 export interface SQLiteSelectBuilderConstructor {
 	new(
 		config: {
@@ -55,6 +87,8 @@ export interface SQLiteSelectBuilderConstructor {
 			dialect: SQLiteDialect;
 			withList: Subquery[];
 			distinct: boolean | undefined;
+			indexedBy?: string;
+			notIndexed?: boolean;
 		},
 	): AnySQLiteSelectQueryBuilder;
 }
@@ -94,6 +128,8 @@ export class SQLiteSelectBuilder<
 
 	from<TFrom extends SQLiteTable | Subquery | SQLiteViewBase | SQL>(
 		source: TFrom,
+		indexHint?: TFrom extends SQLiteTable ? SQLiteIndexHintConfig
+			: 'Index hint configuration is allowed only for SQLiteTable and not for subqueries or views',
 	): SQLiteSelectKind<
 		THKT,
 		GetSelectTableName<TFrom>,
@@ -132,6 +168,7 @@ export class SQLiteSelectBuilder<
 			dialect: this.dialect,
 			withList: this.withList ?? [],
 			distinct: this.distinct,
+			...resolveIndexHint(source, indexHint),
 		}) as any;
 	}
 }
@@ -176,7 +213,7 @@ export class SQLiteSelectBase<
 	protected cacheConfig?: WithCacheConfig = undefined;
 
 	constructor(
-		{ table, fields, isPartialSelect, session, dialect, withList, distinct }: {
+		{ table, fields, isPartialSelect, session, dialect, withList, distinct, indexedBy, notIndexed }: {
 			table: SQLiteSelectConfig['table'];
 			fields: SQLiteSelectConfig['fields'];
 			isPartialSelect: boolean;
@@ -184,6 +221,8 @@ export class SQLiteSelectBase<
 			dialect: SQLiteDialect;
 			withList: Subquery[] | undefined;
 			distinct: boolean | undefined;
+			indexedBy?: string;
+			notIndexed?: boolean;
 		},
 	) {
 		super();
@@ -192,6 +231,8 @@ export class SQLiteSelectBase<
 			table,
 			fields: { ...fields },
 			distinct,
+			indexedBy,
+			notIndexed,
 			setOperators: [],
 		};
 		this.isPartialSelect = isPartialSelect;
@@ -219,10 +260,24 @@ export class SQLiteSelectBase<
 	): 'cross' extends TJoinType ? SQLiteSelectCrossJoinFn<this, TDynamic>
 		: SQLiteSelectJoinFn<this, TDynamic, TJoinType>
 	{
-		return (
-			table: SQLiteTable | Subquery | SQLiteViewBase | SQL,
-			on?: ((aliases: TSelection) => SQL | undefined) | SQL | undefined,
+		return <TJoinedTable extends SQLiteTable | Subquery | SQLiteViewBase | SQL>(
+			table: TJoinedTable,
+			a?:
+				| ((aliases: TSelection) => SQL | undefined)
+				| SQL
+				| undefined
+				| (TJoinedTable extends SQLiteTable ? SQLiteIndexHintConfig
+					: 'Index hint configuration is allowed only for SQLiteTable and not for subqueries or views'),
+			b?: TJoinedTable extends SQLiteTable ? SQLiteIndexHintConfig
+				: 'Index hint configuration is allowed only for SQLiteTable and not for subqueries or views',
 		) => {
+			const isCrossJoin = joinType === 'cross';
+			let on = (isCrossJoin ? undefined : a) as
+				| ((aliases: TSelection) => SQL | undefined)
+				| SQL
+				| undefined;
+			const indexHint = (isCrossJoin ? a : b) as SQLiteIndexHintConfig | undefined;
+
 			const baseTableName = this.tableName;
 			const tableName = getTableLikeName(table);
 
@@ -262,7 +317,7 @@ export class SQLiteSelectBase<
 			if (!this.config.joins) {
 				this.config.joins = [];
 			}
-			this.config.joins.push({ on, table, joinType, alias: tableName });
+			this.config.joins.push({ on, table, joinType, alias: tableName, ...resolveIndexHint(table, indexHint) });
 
 			if (typeof tableName === 'string') {
 				switch (joinType) {

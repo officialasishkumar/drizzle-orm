@@ -27,7 +27,7 @@ import type { InferViewSelectModel } from '~/view.ts';
 
 import type { Equal } from 'type-tests/utils.ts';
 import { Expect } from 'type-tests/utils.ts';
-import { integer, text } from '~/sqlite-core/index.ts';
+import { index, integer, text } from '~/sqlite-core/index.ts';
 import type { SQLiteSelect, SQLiteSelectQueryBuilder } from '~/sqlite-core/query-builders/select.types.ts';
 import { sqliteTable } from '~/sqlite-core/table.ts';
 import { sqliteView } from '~/sqlite-core/view.ts';
@@ -866,4 +866,64 @@ Expect<
 	>;
 	Expect<Equal<typeof result, typeof view.$inferSelect[]>>;
 	Expect<Equal<typeof result, InferViewSelectModel<typeof view>[]>>;
+}
+
+{
+	const table1 = sqliteTable('table1', {
+		id: integer().primaryKey(),
+		name: text().notNull(),
+	}, () => [table1NameIndex]);
+	const table1NameIndex = index('table1_name_index').on(table1.name);
+
+	const table2 = sqliteTable('table2', {
+		id: integer().primaryKey(),
+		table1Id: integer().notNull(),
+	}, () => [table2Table1Index]);
+	const table2Table1Index = index('table2_table1_index').on(table2.table1Id);
+
+	const view = sqliteView('view').as((qb) => qb.select().from(table2));
+	const sq = db.select().from(table2).as('sq');
+
+	await db.select().from(table1, { indexedBy: table1NameIndex });
+	await db.select().from(table1, { indexedBy: 'table1_name_index' });
+	await db.select().from(table1, { notIndexed: true });
+	await db.select().from(table1, { notIndexed: false });
+
+	// @ts-expect-error - `indexedBy` and `notIndexed` can't be combined
+	await db.select().from(table1, { indexedBy: table1NameIndex, notIndexed: true });
+
+	// @ts-expect-error - empty hint
+	await db.select().from(table1, {});
+
+	// @ts-expect-error - unknown hint
+	await db.select().from(table1, { useIndex: table1NameIndex });
+
+	// @ts-expect-error - hints are allowed only for tables
+	await db.select().from(view, { indexedBy: table1NameIndex });
+
+	// @ts-expect-error - hints are allowed only for tables
+	await db.select().from(sq, { notIndexed: true });
+
+	const join1 = await db.select().from(table1)
+		.leftJoin(table2, eq(table1.id, table2.table1Id), { indexedBy: table2Table1Index });
+	Expect<
+		Equal<typeof join1, {
+			table1: typeof table1.$inferSelect;
+			table2: typeof table2.$inferSelect | null;
+		}[]>
+	>;
+
+	await db.select().from(table1).innerJoin(table2, eq(table1.id, table2.table1Id), { notIndexed: true });
+	await db.select().from(table1).rightJoin(table2, eq(table1.id, table2.table1Id), { notIndexed: true });
+	await db.select().from(table1).fullJoin(table2, eq(table1.id, table2.table1Id), { indexedBy: 'table2_table1_index' });
+	await db.select().from(table1).crossJoin(table2, { indexedBy: table2Table1Index });
+
+	// @ts-expect-error - hints are allowed only for tables
+	await db.select().from(table1).leftJoin(view, eq(table1.id, view.table1Id), { indexedBy: table2Table1Index });
+
+	// @ts-expect-error - hints are allowed only for tables
+	await db.select().from(table1).crossJoin(sq, { notIndexed: true });
+
+	// @ts-expect-error - `indexedBy` and `notIndexed` can't be combined
+	await db.select().from(table1).leftJoin(table2, sql``, { indexedBy: table2Table1Index, notIndexed: true });
 }

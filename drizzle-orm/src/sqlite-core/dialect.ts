@@ -407,10 +407,11 @@ export class SQLiteDialect {
 				const onSql = joinMeta.on ? sql` on ${joinMeta.on}` : undefined;
 
 				if (is(table, SQLiteTable)) {
+					const indexHintSql = this.buildIndexHint(joinMeta);
 					joinsArray.push(
 						sql`${new StringChunk(joinMeta.joinType)} join ${
 							table[Table.Symbol.IsAlias] ? aliasedTableSQL(table) : table
-						}${onSql}`,
+						}${indexHintSql}${onSql}`,
 					);
 				} else {
 					joinsArray.push(
@@ -453,9 +454,25 @@ export class SQLiteDialect {
 			: undefined;
 	}
 
+	private buildIndexHint(
+		{ indexedBy, notIndexed }: Pick<SQLiteSelectConfig, 'indexedBy' | 'notIndexed'>,
+	): SQL | undefined {
+		if (indexedBy !== undefined) return sql` indexed by ${sql.identifier(indexedBy)}`;
+		if (notIndexed) return sql` not indexed`;
+		return undefined;
+	}
+
 	private buildFromTable(
 		table: SQL | Subquery | SQLiteViewBase | SQLiteTable | undefined,
+		indexHint?: Pick<SQLiteSelectConfig, 'indexedBy' | 'notIndexed'>,
 	): SQL | Subquery | SQLiteViewBase | SQLiteTable | undefined {
+		if (is(table, SQLiteTable) && indexHint) {
+			const indexHintSql = this.buildIndexHint(indexHint);
+			if (indexHintSql) {
+				return sql`${table[Table.Symbol.IsAlias] ? aliasedTableSQL(table) : table}${indexHintSql}`;
+			}
+		}
+
 		if (is(table, Table) && table[Table.Symbol.IsAlias]) return aliasedTableSQL(table);
 
 		if (is(table, View) && table[ViewBaseConfig].isAlias) {
@@ -483,6 +500,8 @@ export class SQLiteDialect {
 		offset,
 		distinct,
 		setOperators,
+		indexedBy,
+		notIndexed,
 		useSelectionCastCodecs,
 	}: SQLiteSelectConfig): SQL {
 		const fieldsList = fieldsFlat ?? orderSelectedFields<SQLiteColumn>(fields, undefined, this.codecs);
@@ -531,7 +550,7 @@ export class SQLiteDialect {
 			ignoreCastCodecs: !useSelectionCastCodecs || setOperators.length > 0,
 		});
 
-		const tableSql = this.buildFromTable(table);
+		const tableSql = this.buildFromTable(table, { indexedBy, notIndexed });
 
 		const joinsSql = this.buildJoins(joins);
 
